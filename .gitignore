@@ -1,0 +1,11 @@
+build
+dist
+ptaresamplelib.egg-info
+*~
+.*.swp
+*.pyc
+*.txt
+*.h5
+*.png
+*.dat
+*.tzt
