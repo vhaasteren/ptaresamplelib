@@ -1,4 +1,4 @@
-from __future__ import division
+from __future__ import division, print_function
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.linalg as sl
@@ -6,8 +6,7 @@ import scipy.stats as stats
 import scipy.special as ss
 import scipy.ndimage.filters as filters
 import scipy.interpolate as interp
-#import piccard as pic
-from bounded_kde import *
+import bounded_kde
 import glob, os, sys
 
 pic_spd = 86400.0       # Seconds per day
@@ -53,6 +52,7 @@ def spectrumToHc(ufreqs, rho, Tmax):
     pfreqs = 10**ufreqs
     norm = 12*Tmax*np.pi**2 / (pic_spy**3)
     return np.log10(np.sqrt(norm * (10**rho) * (pfreqs * pic_spy)**3))
+
 
 def gw_turnover_spectrum(freqs, Tmax, pars):
     # get Amplitude and spectral index
@@ -219,13 +219,14 @@ def ul_loglikelihood(resdict, logpsd, low=-18.0, high=-10.0):
     gwfreqs = resdict[0]['freqs']      # Assume all frequencies of all pulsars are the same
     lpsd = np.array(logpsd).copy()
     loglik = 0.0
+    nmaxfreqs = len(lpsd)
 
     # Set the practical log10(psd) for this round
     lpsd[np.where(lpsd < low)] = low
     lpsd[np.where(lpsd > high)] = high
     
     # Calculate the posterior, by multiplying the kdes of all pulsars
-    for jj, freq in enumerate(gwfreqs):
+    for jj, freq in enumerate(gwfreqs[:nmaxfreqs]):
         for pp, psrres in enumerate(resdict):
             kde = psrres['kdes_ul'][jj]
 
@@ -234,11 +235,27 @@ def ul_loglikelihood(resdict, logpsd, low=-18.0, high=-10.0):
     return loglik
         
 def gw_ul_powerlaw(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
-        gwlow=-20.0, gwhigh=-13.0, si=4.33, gwbins=50000):
+        gwlow=-20.0, gwhigh=-13.0, si=4.33, gwbins=50000, ngwfreqs=None):
+    """
+    Calculate an upper-limit on the GWB amplitude for a power-law spectrum
+
+    @param resdict:     Results dictionary, with all the single-pulsar kdes
+    @param confidence:  Confidence level of the upper-limit
+    @param low:         Lower bound on the residual PSD values
+    @param high:        Upper bound on the residual PSD values
+    @param bins:        Number of bins in GW amplitude (will be smoothed)
+    @param gwlow:       Lower bound on the GW power-law amplitude
+    @param gwhigh:      Upper bound on the GW power-law amplitude
+    @param si:          GWB PSD spectral index
+    @param gwbind:      Number of bins on the GWB amplitude (for upper-limit)
+    @param ngwfreqs:    How many GWB frequencies to include (can be < maximum)
+    """
     gwfreqs = resdict[0]['freqs']      # Assume all frequencies of all pulsars are the same
     gwamps = np.linspace(gwlow, gwhigh, bins)
     prior_kde = kde_gwprior(low=gwlow, high=gwhigh, bins=bins)
     lpdf = np.zeros_like(gwamps)
+    if ngwfreqs is None:
+        ngwfreqs = len(gwfreqs)
 
     for ii, gwamp in enumerate(gwamps):
         # Calculate the spectrum for this GW amplitude
@@ -246,7 +263,7 @@ def gw_ul_powerlaw(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
         spect[np.where(spect < low)] = low
         spect[np.where(spect > high)] = high
 
-        lpdf[ii] += ul_loglikelihood(resdict, spect, low=low, high=high)
+        lpdf[ii] += ul_loglikelihood(resdict, spect[:ngwfreqs], low=low, high=high)
         lpdf[ii] += np.log(prior_kde(gwamp))
 
     # Smooth the log-pdf
