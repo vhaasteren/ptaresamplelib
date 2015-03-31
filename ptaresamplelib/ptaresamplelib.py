@@ -256,6 +256,8 @@ def gw_ul_powerlaw(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
     lpdf = np.zeros_like(gwamps)
     if ngwfreqs is None:
         ngwfreqs = len(gwfreqs)
+    else:
+        ngwfreqs = min(len(gwfreqs), ngwfreqs)
 
     for ii, gwamp in enumerate(gwamps):
         # Calculate the spectrum for this GW amplitude
@@ -278,29 +280,33 @@ def gw_ul_powerlaw(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
 
     return gwamps_l[cdf > confidence][0], gwamps_l, pdf
 
-def gw_ul_powerlaw_old(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
-        gwlow=-20.0, gwhigh=-13.0, si=4.33, gwbins=50000):
+def gw_ul_powerlaw_noTmax(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
+        gwlow=-20.0, gwhigh=-13.0, si=4.33, gwbins=50000, ngwfreqs=None):
     """
-    Using the list of result dictionaries, create the power-law gamma=4.33 upper-limits
+    As above, but now allow the frequencies of different pulsars to be
+    different.
     """
-    gwfreqs = resdict[0]['freqs']      # Assume all frequencies of all pulsars are the same
     gwamps = np.linspace(gwlow, gwhigh, bins)
     prior_kde = kde_gwprior(low=gwlow, high=gwhigh, bins=bins)
     lpdf = np.zeros_like(gwamps)
 
     for ii, gwamp in enumerate(gwamps):
-        # Calculate the spectrum for this GW amplitude
-        spect = np.log10(gw_pl_spectrum(gwfreqs, lh_c=gwamp, si=si))
-        spect[np.where(spect < low)] = low
-        spect[np.where(spect > high)] = high
-        
-        # Calculate the posterior, by multiplying the kdes of all pulsars
-        for jj, freq in enumerate(gwfreqs):
-            for pp, psrres in enumerate(resdict):
-                kde = psrres['kdes_ul'][jj]
+        for pp, psrres in enumerate(resdict):
+            gwfreqs = resdict[0]['freqs']
+            if ngwfreqs is None:
+                ngwfreqs = len(gwfreqs)
+            else:
+                ngwfreqs = min(len(gwfreqs), ngwfreqs)
 
+            # Calculate the spectrum for this GW amplitude
+            spect = np.log10(gw_pl_spectrum(gwfreqs, lh_c=gwamp, si=si))
+            spect[np.where(spect < low)] = low
+            spect[np.where(spect > high)] = high
+
+            for jj, freq in enumerate(gwfreqs[:ngwfreqs]):
+                kde = psrres['kdes_ul'][jj]
                 lpdf[ii] += np.log(kde(spect[jj]))
-        
+
         lpdf[ii] += np.log(prior_kde(gwamp))
 
     # Smooth the log-pdf
