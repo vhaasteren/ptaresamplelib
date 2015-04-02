@@ -30,7 +30,7 @@ setup(
                     + open("HISTORY.md").read(),
     package_data={"": ["README", "LICENSE", "AUTHORS.md"]},
     include_package_data=True,
-    install_requires=["numpy", "scipy"],
+    install_requires=["numpy", "scipy", "matplotlib"],
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
