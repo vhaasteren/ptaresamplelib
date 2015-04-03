@@ -7,6 +7,7 @@ import scipy.special as ss
 import scipy.ndimage.filters as filters
 import scipy.interpolate as interp
 import bounded_kde
+import piccard as pic
 import glob, os, sys
 
 pic_spd = 86400.0       # Seconds per day
@@ -124,6 +125,21 @@ def kde_multiply(kde_list, low=-18.0, high=-10.0, bins=250, kind='cubic'):
     pdf *= bins / (np.sum(pdf) * (high-low))
     return smooth_hist(pdf, x, kind=kind)
 
+def kde_logsum(kde_list, low=-18.0, high=-10.0, bins=250, kind='cubic'):
+    """
+    Multiply a bunch of KDEs, and return the resulting KDE
+    """
+    lpdf = np.zeros(bins)
+    x = np.linspace(low, high, bins)
+    for kde in kde_list:
+        lpdf += np.log(kde(x))
+        if np.any(kde(x) < 0.0):
+            print("kde(x) = ", kde(x))
+            raise ValueError("Probabilities cannot get negative!")
+    
+    #pdf *= bins / (np.sum(pdf) * (high-low))
+    return smooth_hist(lpdf, x, kind=kind)
+
 def make_ul_kde(kde, minz, maxz, bins=250, kind='cubic'):
     """
     Given a kernel density estimator on the logarithmic interval [minz, maxz],
@@ -152,7 +168,7 @@ def single_psr_sp_ul(psrdir, burnin=5000, low=-18.0, high=-10.0, bins=250, numfr
     For a single pulsar (chain directory), create the kernel density estimate distributions
     of the per-frequency posteriors. Also create the upper-limit equivalent
     """
-    lp, ll, chain, labels, pulsars, pulsarnames, stypes, mlpso, mlpsopars = ReadMCMCFile(psrdir, incextra=True)
+    lp, ll, chain, labels, pulsars, pulsarnames, stypes, mlpso, mlpsopars = pic.ReadMCMCFile(psrdir, incextra=True)
     inds = np.where(np.array(stypes) == 'spectrum')[0]
     
     if numfreqs is not None:
@@ -164,7 +180,13 @@ def single_psr_sp_ul(psrdir, burnin=5000, low=-18.0, high=-10.0, bins=250, numfr
     kdes_ul = []
     for ii in inds:
         samples = chain[burnin:,ii]
-        kde = bounded_kde.Bounded_kde(samples, low=low)
+        kde_b = bounded_kde.Bounded_kde(samples, low=low)
+
+        # The bounded KDE is super slow. Speed it up by using an interpolator
+        xx = np.linspace(low-0.1, high + np.log10(np.sqrt(2))+0.1, 2*bins)
+        yy = kde_b(xx)
+        kde = interp.interp1d(xx, yy, kind=kind)
+
         kdes.append(kde)
         kde_ul = make_ul_kde(kde, low, high, bins=bins, kind=kind)
         kdes_ul.append(kde_ul)
@@ -172,16 +194,17 @@ def single_psr_sp_ul(psrdir, burnin=5000, low=-18.0, high=-10.0, bins=250, numfr
     return freqs, kdes, kdes_ul
 
 def process_psrdirs(psrdirs, low=-18.0, high=-10.0, bins=100, numfreqs=None,
-        verbose=False, kind='cubic'):
+        burnin=5000, verbose=False, kind='cubic'):
     """
     Create the result list of dicts of the psr dictionaries
     """
     resdict = []
     for psrdir in psrdirs:
-        fr, kd, kdu = single_psr_sp_ul(psrdir, burnin=5000,
+        psrname = os.path.basename(psrdir.rstrip('/'))
+        fr, kd, kdu = single_psr_sp_ul(psrdir, burnin=burnin,
                                        low=low, high=high, bins=bins,
                                        numfreqs=numfreqs, kind=kind)
-        resdict.append({'freqs':fr, 'kdes':kd, 'kdes_ul':kdu})
+        resdict.append({'freqs':fr, 'kdes':kd, 'kdes_ul':kdu, 'psrname':psrname})
         if verbose:
             print("Done with {0}".format(psrdir))
 
@@ -192,18 +215,24 @@ def gw_ul_spectrum(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100):
     Using the list of result dictionaries, create the spectrum upper-limits
     """
     gwfreqs = resdict[0]['freqs']      # Assume all frequencies of all pulsars are the same
-    prior_kde = kde_gwprior(low=low, high=high, bins=bins)
+    #prior_kde = kde_gwprior(low=low, high=high, bins=bins)
     ul = np.zeros_like(gwfreqs)
     gwamps = np.linspace(low, high, bins)
 
     for ii, freq in enumerate(gwfreqs):
-        kdes = [prior_kde]
+        #kdes = [prior_kde]
+        kdes = []
         for pp, psrres in enumerate(resdict):
             kdes.append(psrres['kdes_ul'][ii])
 
-        fullkde = kde_multiply(kdes, low, high, bins=bins)
+        #fullkde = kde_multiply(kdes, low, high, bins=bins)
+        lfullkde = kde_logsum(kdes, low, high, bins=bins)
 
-        cdf = np.cumsum(fullkde(gwamps)) / np.sum(fullkde(gwamps))
+        #cdf = np.cumsum(fullkde(gwamps)) / np.sum(fullkde(gwamps))
+        lpdf = lfullkde(gwamps) + np.log(10**gwamps)
+        pdf = np.exp(lpdf - np.max(lpdf))
+        cdf = np.cumsum(pdf) / np.sum(pdf)
+
         ul[ii] = gwamps[cdf > confidence][0]
     
     return gwfreqs, ul
@@ -252,7 +281,7 @@ def gw_ul_powerlaw(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
     """
     gwfreqs = resdict[0]['freqs']      # Assume all frequencies of all pulsars are the same
     gwamps = np.linspace(gwlow, gwhigh, bins)
-    prior_kde = kde_gwprior(low=gwlow, high=gwhigh, bins=bins)
+    #prior_kde = kde_gwprior(low=gwlow, high=gwhigh, bins=bins)
     lpdf = np.zeros_like(gwamps)
     if ngwfreqs is None:
         ngwfreqs = len(gwfreqs)
@@ -266,7 +295,7 @@ def gw_ul_powerlaw(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
         spect[np.where(spect > high)] = high
 
         lpdf[ii] += ul_loglikelihood(resdict, spect[:ngwfreqs], low=low, high=high)
-        lpdf[ii] += np.log(prior_kde(gwamp))
+        lpdf[ii] += np.log(10**gwamp) #np.log(prior_kde(gwamp))
 
     # Smooth the log-pdf
     lpdf_kde = smooth_hist(lpdf, gwamps, sigma=0.75, kind='linear')
@@ -287,7 +316,7 @@ def gw_ul_powerlaw_noTmax(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=
     different.
     """
     gwamps = np.linspace(gwlow, gwhigh, bins)
-    prior_kde = kde_gwprior(low=gwlow, high=gwhigh, bins=bins)
+    #prior_kde = kde_gwprior(low=gwlow, high=gwhigh, bins=bins)
     lpdf = np.zeros_like(gwamps)
 
     for ii, gwamp in enumerate(gwamps):
@@ -307,7 +336,7 @@ def gw_ul_powerlaw_noTmax(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=
                 kde = psrres['kdes_ul'][jj]
                 lpdf[ii] += np.log(kde(spect[jj]))
 
-        lpdf[ii] += np.log(prior_kde(gwamp))
+        lpdf[ii] += np.log(10**gwamp)  #np.log(prior_kde(gwamp))
 
     # Smooth the log-pdf
     lpdf_kde = smooth_hist(lpdf, gwamps, sigma=0.75, kind='linear')
@@ -332,7 +361,7 @@ def gw_ul_powerlaw_2d(resdict, confidence=0.95, low=-18.0, high=-10.0, gwlow=-17
     gwsis = np.linspace(2.01, 6.99, bins)
     lpdf = np.zeros((bins, bins))
 
-    prior_kde = kde_gwprior(low=gwlow, high=gwhigh, bins=bins)
+    #prior_kde = kde_gwprior(low=gwlow, high=gwhigh, bins=bins)
 
     for kk, gwsi in enumerate(gwsis):
         for ii, gwamp in enumerate(gwamps):
@@ -347,7 +376,7 @@ def gw_ul_powerlaw_2d(resdict, confidence=0.95, low=-18.0, high=-10.0, gwlow=-17
                     kde = psrres['kdes_ul'][jj]
                     lpdf[ii,kk] += np.log(kde(spect[jj]))
 
-            lpdf[ii,kk] += np.log(prior_kde(gwamp))
+            lpdf[ii,kk] += np.log(10**gwamp) #np.log(prior_kde(gwamp))
     
     pdf = np.exp(lpdf - np.max(lpdf))
 
