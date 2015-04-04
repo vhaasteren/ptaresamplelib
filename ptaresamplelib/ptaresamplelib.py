@@ -132,10 +132,12 @@ def kde_logsum(kde_list, low=-18.0, high=-10.0, bins=250, kind='cubic'):
     lpdf = np.zeros(bins)
     x = np.linspace(low, high, bins)
     for kde in kde_list:
-        lpdf += np.log(kde(x))
-        if np.any(kde(x) < 0.0):
+        pdf = kde(x)
+        if np.any(pdf < 0.0):
             print("kde(x) = ", kde(x))
             raise ValueError("Probabilities cannot get negative!")
+            #pdf[pdf < 0.0] = 1.0e-99
+        lpdf += np.log(pdf)
     
     #pdf *= bins / (np.sum(pdf) * (high-low))
     return smooth_hist(lpdf, x, kind=kind)
