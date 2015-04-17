@@ -58,14 +58,16 @@ class Bounded_kde_md(gaussian_kde):
     for a probability distribution function that exists on a bounded
     domain."""
 
-    def __init__(self, pts, low=None, high=None, *args, **kwargs):
+    def __init__(self, pts, low=None, high=None, truncate=True, *args, **kwargs):
         """Initialize with the given bounds.  Either ``low`` or
         ``high`` may be ``None`` if the bounds are one-sided.  Extra
         parameters are passed to :class:`gaussian_kde`.
 
         :param low: The lower domain boundary.
 
-        :param high: The upper domain boundary."""
+        :param high: The upper domain boundary.
+        
+        :param truncate: Truncate outside of low/high bounds"""
         pts = np.atleast_1d(pts)
 
         assert pts.ndim >= 1, 'Bounded_kde_md requires at least 1D data'
@@ -76,11 +78,12 @@ class Bounded_kde_md(gaussian_kde):
         self._high = np.atleast_1d(high)
         self._low_val = np.zeros(pts.ndim)
         self._high_val = np.zeros(pts.ndim)
+        self._truncate = truncate
 
         self._add_reflections(pts.ndim)
 
     def unique_rows(self, arr):
-        """ Given array arr, return the unique rows of arr"""
+        """ Given array arr, return the unique rows of arr. Ugly, but fast"""
         b = np.ascontiguousarray(arr).view(np.dtype((np.void, arr.dtype.itemsize
                 * arr.shape[1])))
         temp, idx = np.unique(b, return_index=True)
@@ -155,10 +158,15 @@ class Bounded_kde_md(gaussian_kde):
                     self._m_high(reflection) * (2.0*self._high_val - xs.T)
                     ).T)
 
-        # We can truncate the pdf outside of low/high
+        # Truncate the pdf outside of low/high
         mult = np.ones_like(pdf)
-        #mult = np.logical_and(np.all((xs.T >= self._low_val).T, axis=0),
-        #        np.all((xs.T <= self._high_val).T, axis=0))
+        if self._truncate:
+            # If 1D, do not transpose the data, since Python auto-casts arrays
+            if len(xs.shape) == 1 and not len(self._low_val) > 1:
+                mult = np.logical_and(xs >= self._low_val, xs <= self._high_val)
+            else:
+                mult = np.logical_and(np.all((xs.T >= self._low_val).T, axis=0),
+                        np.all((xs.T <= self._high_val).T, axis=0))
 
         return pdf * mult
 

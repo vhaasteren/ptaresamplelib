@@ -134,8 +134,8 @@ def kde_logsum(kde_list, low=-18.0, high=-10.0, bins=250, kind='cubic'):
     for kde in kde_list:
         pdf = kde(x)
         if np.any(pdf < 0.0):
-            print("kde(x) = ", kde(x))
-            raise ValueError("Probabilities cannot get negative!")
+            #print("kde(x) = ", kde(x))
+            raise ValueError("Probabilities cannot get negative! kde(x) = {0}".format(kde(x)))
             #pdf[pdf < 0.0] = 1.0e-99
         lpdf += np.log(pdf)
     
@@ -165,7 +165,7 @@ def make_ul_kde(kde, minz, maxz, bins=250, kind='cubic'):
     
     return smooth_hist(dist_x, X1D, kind=kind)
 
-def single_psr_sp_ul(psrdir, burnin=5000, low=-18.0, high=-10.0, bins=250, numfreqs=None, kind='cubic'):
+def create_psr_1D_kdes(psrdir, burnin=5000, low=-18.0, high=-10.0, bins=250, numfreqs=None, kind='cubic'):
     """
     For a single pulsar (chain directory), create the kernel density estimate distributions
     of the per-frequency posteriors. Also create the upper-limit equivalent
@@ -203,7 +203,7 @@ def process_psrdirs(psrdirs, low=-18.0, high=-10.0, bins=100, numfreqs=None,
     resdict = []
     for psrdir in psrdirs:
         psrname = os.path.basename(psrdir.rstrip('/'))
-        fr, kd, kdu = single_psr_sp_ul(psrdir, burnin=burnin,
+        fr, kd, kdu = create_psr_1D_kdes(psrdir, burnin=burnin,
                                        low=low, high=high, bins=bins,
                                        numfreqs=numfreqs, kind=kind)
         resdict.append({'freqs':fr, 'kdes':kd, 'kdes_ul':kdu, 'psrname':psrname})
@@ -211,6 +211,87 @@ def process_psrdirs(psrdirs, low=-18.0, high=-10.0, bins=100, numfreqs=None,
             print("Done with {0}".format(psrdir))
 
     return resdict
+
+def write_resdict(dirname, resdict, low=-18.0, high=-10.0, niter=1000):
+    """
+    Given a list of result dictionaries 'resdict', write all the kde's to text
+    files
+
+    @param dirname:     Name of output directory
+    @param resdict:     List of result dictionaries
+    @param low:         Lowest PSD value allowed
+    @param high:        Highest PSD value allowed
+    @param niter:       Number of iterations/bins when interpolating
+    """
+    # Sample the kde's and save them to disk
+    for ii, rd in enumerate(resdict):
+        amp = np.linspace(low, high, niter)
+        fr = rd['freqs']
+        psrname = rd['psrname']
+        pdf_sin = np.zeros((niter, len(fr)))
+        pdf_ul = np.zeros((niter, len(fr)))
+
+        for jj in range(len(fr)):
+            pdf_sin[:,jj] = rd['kdes'][jj](amp)
+            pdf_ul[:,jj] = rd['kdes_ul'][jj](amp)
+             
+            filename_sin = os.path.join(dirname, psrname + '-sin-kde-df.txt')
+            filename_ul = os.path.join(dirname, psrname + '-ul-kde-df.txt')
+            filename_fr = os.path.join(dirname, psrname + '-gwfreqs.txt')
+            np.savetxt(filename_sin, pdf_sin)
+            np.savetxt(filename_ul, pdf_ul)
+            np.savetxt(filename_fr, fr)
+
+def read_resdict(dirname, psrlist=None, low=-18.0, high=-10.0, niter=1000):
+    """
+    Read all the result dictionaries present in 'dirname'. Only use selected
+    pulsars if psrlist is provided
+
+    @param dirname:     Name of input directory
+    @param psrlist:     List of pulsars to read (None=all)
+    @param low:         Lowest PSD value allowed
+    @param high:        Highest PSD value allowed
+    @param niter:       Number of iterations/bins when interpolating
+
+    @return resdict:    List of result dictionaries
+    """
+    resdict = []
+
+    # Create list of pulsars
+    pfiles = glob.glob(os.path.join(dirname, '*-sin-kde-df.txt'))
+    new_psrlist = []
+    for pfile in pfiles:
+        psrname = os.path.basename(pfile.rstrip('/'))[:-15]
+        if psrlist is None or psrname in psrlist:
+            new_psrlist.append(psrname)
+        elif psrlist is not None:
+            pass
+
+    if len(new_psrlist) < len(psrlist):
+        raise IOError("Not all requested pulsars were found")
+
+    for pp, psrname in enumerate(new_psrlist):
+        amp = np.linspace(low, high, niter)
+        filename_sin = os.path.join(dirname, psrname + '-sin-kde-df.txt')
+        filename_ul = os.path.join(dirname, psrname + '-ul-kde-df.txt')
+        filename_fr = os.path.join(dirname, psrname + '-gwfreqs.txt')
+
+        kde_sin_pdf = np.loadtxt(filename_sin)
+        kde_ul_pdf = np.loadtxt(filename_ul)
+        gwfreqs = np.loadtxt(filename_fr)
+        kdes = []
+        kdes_ul = []
+        for ii in range(len(gwfreqs)):
+            # Cubic takes so long....
+            kde_sin = smooth_hist(kde_sin_pdf[:,ii], amp, kind='linear')
+            kde_ul = smooth_hist(kde_ul_pdf[:,ii], amp, kind='linear')
+            kdes.append(kde_sin)
+            kdes_ul.append(kde_ul)
+        resdict.append({'freqs':gwfreqs, 'kdes':kdes, 'kdes_ul':kdes_ul, 'psrname':psrname})
+    
+    return resdict
+ 
+
 
 def gw_ul_spectrum(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100):
     """
@@ -239,79 +320,8 @@ def gw_ul_spectrum(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100):
     
     return gwfreqs, ul
 
-def ul_loglikelihood(resdict, logpsd, low=-18.0, high=-10.0):
-    """
-    For a set of log10(PSD) values ``lpsd'', evaluate the upper-limit likelihood
-    of the GW frequencies of all pulsars
 
-    Note that this marginalized likelihood/posterior has a prior flat in
-    log(gwamp)
-    """
-    gwfreqs = resdict[0]['freqs']      # Assume all frequencies of all pulsars are the same
-    lpsd = np.array(logpsd).copy()
-    loglik = 0.0
-    nmaxfreqs = len(lpsd)
-
-    # Set the practical log10(psd) for this round
-    lpsd[np.where(lpsd < low)] = low
-    lpsd[np.where(lpsd > high)] = high
-    
-    # Calculate the posterior, by multiplying the kdes of all pulsars
-    for jj, freq in enumerate(gwfreqs[:nmaxfreqs]):
-        for pp, psrres in enumerate(resdict):
-            kde = psrres['kdes_ul'][jj]
-
-            loglik += np.log(kde(lpsd[jj]))
-
-    return loglik
-        
 def gw_ul_powerlaw(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
-        gwlow=-20.0, gwhigh=-13.0, si=4.33, gwbins=50000, ngwfreqs=None):
-    """
-    Calculate an upper-limit on the GWB amplitude for a power-law spectrum
-
-    @param resdict:     Results dictionary, with all the single-pulsar kdes
-    @param confidence:  Confidence level of the upper-limit
-    @param low:         Lower bound on the residual PSD values
-    @param high:        Upper bound on the residual PSD values
-    @param bins:        Number of bins in GW amplitude (will be smoothed)
-    @param gwlow:       Lower bound on the GW power-law amplitude
-    @param gwhigh:      Upper bound on the GW power-law amplitude
-    @param si:          GWB PSD spectral index
-    @param gwbind:      Number of bins on the GWB amplitude (for upper-limit)
-    @param ngwfreqs:    How many GWB frequencies to include (can be < maximum)
-    """
-    gwfreqs = resdict[0]['freqs']      # Assume all frequencies of all pulsars are the same
-    gwamps = np.linspace(gwlow, gwhigh, bins)
-    #prior_kde = kde_gwprior(low=gwlow, high=gwhigh, bins=bins)
-    lpdf = np.zeros_like(gwamps)
-    if ngwfreqs is None:
-        ngwfreqs = len(gwfreqs)
-    else:
-        ngwfreqs = min(len(gwfreqs), ngwfreqs)
-
-    for ii, gwamp in enumerate(gwamps):
-        # Calculate the spectrum for this GW amplitude
-        spect = np.log10(gw_pl_spectrum(gwfreqs, lh_c=gwamp, si=si))
-        spect[np.where(spect < low)] = low
-        spect[np.where(spect > high)] = high
-
-        lpdf[ii] += ul_loglikelihood(resdict, spect[:ngwfreqs], low=low, high=high)
-        lpdf[ii] += np.log(10**gwamp) #np.log(prior_kde(gwamp))
-
-    # Smooth the log-pdf
-    lpdf_kde = smooth_hist(lpdf, gwamps, sigma=0.75, kind='linear')
-    gwamps_l = np.linspace(gwlow, gwhigh, gwbins)
-    lpdf_l = lpdf_kde(gwamps_l)
-    pdf = np.exp(lpdf_l - np.max(lpdf_l))
-    #pdf *= gwbins / (np.sum(pdf) * (gwhigh-gwlow))
-    
-    # Now calculate the upper-limit
-    cdf = np.cumsum(pdf) / np.sum(pdf)
-
-    return gwamps_l[cdf > confidence][0], gwamps_l, pdf
-
-def gw_ul_powerlaw_noTmax(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
         gwlow=-20.0, gwhigh=-13.0, si=4.33, gwbins=50000, ngwfreqs=None):
     """
     As above, but now allow the frequencies of different pulsars to be
@@ -384,26 +394,65 @@ def gw_ul_powerlaw_2d(resdict, confidence=0.95, low=-18.0, high=-10.0, gwlow=-17
 
     return gwamps, gwsis, pdf
 
-def loglikelihood(pars, resdict, stype='powerlaw', model='uniform', low=-18.0,
-        high=-10.0):
+
+def psr_loglikelihood(psrresdict, logpsd, low=-18.0, high=-10.0, key='kdes'):
     """
-    Logliklihood...  blah
+    For a set of log10(PSD) values ``logpsd'', evaluate the likelihood
+    for this pulsar
+
+    @param psrresdict:  Dictionary of results for this pulsar
+    @param logpsd:      Values of the PSD
+    @param low:         Lowest possible value of PSD amplitude
+    @param high:        Highest possible value of PSD amplitude
+    @param key:         Which kde approximation to use (kdes or kdes_ul)
     """
-    Tmax = 1.0 / resdict[0]['freqs'][0]
-    gwfreqs = resdict[0]['freqs']
+    lpsd = np.array(logpsd).copy()
+    nmaxfreqs = len(lpsd)
 
-    if stype=='powerlaw':
-        spect = np.log10(gw_pl_spectrum(gwfreqs, lh_c=pars[0], si=pars[1],
-                                        Tmax=Tmax))
-    elif stype=='turnover':
-        spect = np.log10(gw_turnover_spectrum(gwfreqs, Tmax=Tmax, pars=pars))
-    else:
-        raise NotImplementedError("Only powerlaw and turnover implemented")
+    lpsd[np.where(lpsd <= low)] = low
+    lpsd[np.where(lpsd >= high)] = high
+    loglik = 0.0
 
-    spect[np.where(spect < low)] = low
-    spect[np.where(spect > high)] = high
+    for jj in range(nmaxfreqs):
+        kde = psrresdict[key][jj]
+        loglik += np.log(kde(lpsd[jj]))
 
-    return ul_loglikelihood(resdict, spect, low=low, high=high)
+    return loglik
+
+def pta_loglikelihood(pars, resdict, stype='powerlaw',
+        low=-18.0, high=-10.0, key='kdes_ul'):
+    """
+    For the entire PTA, calculate the log-likelihood, given parameters pars and
+    the model
+
+    @param pars:    Model parameters (amplitude, spectral-index, etc.)
+    @param resdict: List of all results dictionaries
+    @param stype:   Spectral/signal model ID (powerlaw/turnover)
+    @param low:     Lowest possible value of PSD amplitude
+    @param high:    Highest possible value of PSD amplitude
+    @param key:     Which kde approximation to use (kdes or kdes_ul)
+    """
+    loglik = 0.0
+    for pp, psrresdict in enumerate(resdict):
+        freqs = psrresdict['freqs']
+        Tmax = 1.0 / freqs[0]
+        
+        if stype=='powerlaw':
+            lpsd = np.log10(gw_pl_spectrum(freqs,
+                    lh_c=pars[0], si=pars[1], Tmax=Tmax))
+        elif stype=='turnover':
+            lpsd = np.log10(gw_turnover_spectrum(freqs,
+                    Tmax=Tmax, pars=pars))
+        else:
+            raise NotImplementedError("Only powerlaw and turnover implemented")
+
+        lpsd[np.where(lpsd <= low)] = low
+        lpsd[np.where(lpsd >= high)] = high
+
+        loglik += psr_loglikelihood(psrresdict, lpsd,
+                low=low, high=high, key=key)
+
+    return loglik
 
 
 def logprior(pars, stype='powerlaw', model='uniform'):
@@ -434,3 +483,58 @@ def logprior(pars, stype='powerlaw', model='uniform'):
         prior += -0.5 * (np.log(2 * np.pi * s ** 2) + (m - logA) ** 2 / s ** 2)
     return prior
 
+
+
+################################################################################
+################################################################################
+################### The functions below need to be re-written ##################
+################################################################################
+################################################################################
+
+
+def ul_loglikelihood_old(resdict, logpsd, low=-18.0, high=-10.0):
+    """
+    For a set of log10(PSD) values ``lpsd'', evaluate the upper-limit likelihood
+    of the GW frequencies of all pulsars
+
+    Note that this marginalized likelihood/posterior has a prior flat in
+    log(gwamp)
+    """
+    gwfreqs = resdict[0]['freqs']      # Assume all frequencies of all pulsars are the same
+    lpsd = np.array(logpsd).copy()
+    loglik = 0.0
+    nmaxfreqs = len(lpsd)
+
+    # Set the practical log10(psd) for this round
+    lpsd[np.where(lpsd < low)] = low
+    lpsd[np.where(lpsd > high)] = high
+    
+    # Calculate the posterior, by multiplying the kdes of all pulsars
+    for jj, freq in enumerate(gwfreqs[:nmaxfreqs]):
+        for pp, psrres in enumerate(resdict):
+            kde = psrres['kdes_ul'][jj]
+
+            loglik += np.log(kde(lpsd[jj]))
+
+    return loglik
+
+def loglikelihood_old(pars, resdict, stype='powerlaw', model='uniform', low=-18.0,
+        high=-10.0):
+    """
+    Logliklihood...  blah
+    """
+    Tmax = 1.0 / resdict[0]['freqs'][0]
+    gwfreqs = resdict[0]['freqs']
+
+    if stype=='powerlaw':
+        spect = np.log10(gw_pl_spectrum(gwfreqs, lh_c=pars[0], si=pars[1],
+                                        Tmax=Tmax))
+    elif stype=='turnover':
+        spect = np.log10(gw_turnover_spectrum(gwfreqs, Tmax=Tmax, pars=pars))
+    else:
+        raise NotImplementedError("Only powerlaw and turnover implemented")
+
+    spect[np.where(spect < low)] = low
+    spect[np.where(spect > high)] = high
+
+    return ul_loglikelihood_old(resdict, spect, low=low, high=high)
