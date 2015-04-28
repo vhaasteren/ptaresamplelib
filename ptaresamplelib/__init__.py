@@ -2,6 +2,7 @@ from __future__ import print_function
 
 from ptaresamplelib import *
 import bounded_kde
+import ptmcmc
 
 __version__ = 2015.03
 
