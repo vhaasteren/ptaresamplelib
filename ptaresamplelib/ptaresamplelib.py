@@ -704,7 +704,7 @@ def pta_nanograv_loglikelihood(pars, resdict, stype='powerlaw', model='uniform',
         newgwpars = np.zeros(4)
         newgwpars[0] = pars[0]
         newgwpars[1] = si
-        newgwpars[2:] = pars[1:4]
+        newgwpars[2:4] = pars[1:3]
         newpars = np.append(newgwpars, pars[3:])
         newstype = 'turnover'
     elif stype=='powerlaw_fixedsi':
@@ -747,7 +747,7 @@ def pta_nanograv_logprior(pars, pmin, pmax, stype='powerlaw',
             newgwpars = np.zeros(4)
             newgwpars[0] = pars[0]
             newgwpars[1] = si
-            newgwpars[2:] = pars[1:]
+            newgwpars[2:4] = pars[1:3]
             newpars = np.append(newgwpars, pars[3:])
         elif stype=='powerlaw_fixedsi':
             newstype = 'powerlaw'
