@@ -8,7 +8,10 @@ import scipy.ndimage.filters as filters
 import scipy.interpolate as interp
 import ptmcmc
 import bounded_kde
-import piccard as pic
+try:
+    import piccard as pic
+except ImportError:
+    pic = None
 import glob, os, sys
 
 pic_spd = 86400.0       # Seconds per day
@@ -288,8 +291,8 @@ def process_psrdirs(psrdirs, low=-18.0, high=-10.0, bins=100, numfreqs=None,
 
     return resdict
 
-def process_pl_psrdirs(psrdirs, burnin=5000, verbose=False, kind='cubic',
-        interpolate=True, mcmcprior='uniform', gwblow=-18.0, gwbhigh=-14.0,
+def process_pl_psrdirs(psrdirs, burnin=5000, verbose=False, kind='linear',
+        interpolate=True, mcmcprior='uniform', gwblow=-18.0, gwbhigh=-11.0,
         bins=250):
     """
     Assume the list of directories in psrdirs contains MCMC files with three
@@ -319,7 +322,7 @@ def process_pl_psrdirs(psrdirs, burnin=5000, verbose=False, kind='cubic',
         kde_b = bounded_kde.Bounded_kde(10**samples, low=10**gwblow, high=10**gwbhigh)
 
         if interpolate:
-            xx = np.linspace(10**gwblow, 10**gwbhigh, bins)
+            xx = 10**np.linspace(gwblow, gwbhigh, bins)
             yy = kde_b(xx)
             kde = interp.interp1d(xx, yy, kind=kind)
         else:
@@ -334,7 +337,7 @@ def process_pl_psrdirs(psrdirs, burnin=5000, verbose=False, kind='cubic',
 
 
 def gw_ul_powerlaw_from_plmcmc(plresdict, confidence=0.95, gwblow=-18.0,
-        gwbhigh=-14.0, bins=250, limbins=50000):
+        gwbhigh=-11.0, bins=250, limbins=50000):
     """
     Using the plmcmc runs, calculate the GWB upper-limit for the array by
     multiplying the per-pulsar GWB amplitude kdes
