@@ -184,7 +184,7 @@ def kde_multiply(kde_list, low=-18.0, high=-10.0, bins=250, kind='cubic'):
     pdf *= bins / (np.sum(pdf) * (high-low))
     return smooth_hist(pdf, x, kind=kind)
 
-def kde_logsum(kde_list, low=-18.0, high=-10.0, bins=250, kind='cubic'):
+def kde_logsum(kde_list, low=-18.0, high=-10.0, bins=250, kind='cubic', skipzero=True):
     """
     Multiply a bunch of KDEs, and return the resulting KDE
     """
@@ -196,9 +196,75 @@ def kde_logsum(kde_list, low=-18.0, high=-10.0, bins=250, kind='cubic'):
             #print("kde(x) = ", kde(x))
             raise ValueError("Probabilities cannot get negative! kde(x) = {0}".format(kde(x)))
             #pdf[pdf < 0.0] = 1.0e-99
-        lpdf += np.log(pdf)
+        elif np.any(pdf == 0.0) and not skipzero:
+            raise ValueError("Probabilities cannot get zero! kde(x) = {0}".format(kde(x)))
+        elif np.any(pdf == 0.0):
+            print("WARNING: skipping zero-valued kde")
+        else:
+            lpdf += np.log(pdf)
     
     #pdf *= bins / (np.sum(pdf) * (high-low))
+    return smooth_hist(lpdf, x, kind=kind)
+
+def lhcskde_from_lrkdes(kde_list, df_list, freq, rlow=-18.0, rhigh=-10.0,
+        lhcslow=-34.0, lhcshigh=-20.0, bins=250.0, kind='cubic',
+        skipzero=True):
+    """Multiply (log sum) a bunch of KDEs, transf log10(res**2) -> log10(hc^2)
+
+    :param kde_list:
+        List of all the kdes as a function of log10(res^2)
+
+    :param df_list:
+        List of all the frequency bin sizes (Hz)
+
+    :param freq:
+        Frequency [Hz] (or list of) at which we are calculating hc^2 interpolant
+
+    :param rlow:
+        Low bound of log10(res^2)
+
+    :param rhigh:
+        High bound of log10(res^2)
+
+    :param lhcslow:
+        Low bound of log10(hc^2)
+
+    :param lhcshigh:
+        High bound of log10(hc^2)
+
+    :param bins:
+        Number of bins when doing the log-sum (multiply)
+
+    :param kind:
+        What kind of interpolation to use when creating the interpolant (kde)
+
+    :param skipzero:
+        Skip interpolants that have zero-only elements
+    """
+    fr = np.atleast_1d(freq) * np.ones(len(kde_list))
+    norm = 12*np.pi**2 * fr**3 / np.array(df_list)
+
+    lpdf = np.zeros(bins)
+    x = np.linspace(lhcslow, lhcshigh, bins)
+    for kk, kde in enumerate(kde_list):
+        # Residual power corresponding to our hc2
+        lr2 = x - np.log10(norm[kk])
+        #r2 = np.log10(10**x / norm[kk])
+
+        # Put in place the proper bounds for interpolation
+        lr2[lr2 < rlow] = rlow
+        lr2[lr2 > rhigh] = rhigh
+
+        pdf = kde(lr2)
+        if np.any(pdf < 0.0):
+            raise ValueError("Probabilities cannot get negative! kde(x) = {0}".format(kde(x)))
+        elif np.any(pdf == 0.0) and not skipzero:
+            raise ValueError("Probabilities cannot get zero! kde(x) = {0}".format(kde(x)))
+        elif np.any(pdf == 0.0):
+            print("WARNING: skipping zero-valued kde")
+        else:
+            lpdf += np.log(pdf)
+
     return smooth_hist(lpdf, x, kind=kind)
 
 def make_ul_kde(kde, minz, maxz, bins=250, kind='cubic'):
@@ -268,7 +334,7 @@ def create_psr_1D_kdes(psrdir, burnin=5000, low=-18.0, high=-10.0, bins=250,
         else:
             kde_ul = None
         kdes_ul.append(kde_ul)
-    
+
     return freqs, kdes, kdes_ul
 
 def process_psrdirs(psrdirs, low=-18.0, high=-10.0, bins=100, numfreqs=None,
@@ -473,7 +539,7 @@ def read_resdict(dirname, psrlist=None, low=-18.0, high=-10.0, niter=1000,
  
 
 
-def gw_ul_spectrum(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100):
+def gw_ul_spectrum_noTmax(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100):
     """
     Using the list of result dictionaries, create the spectrum upper-limits
     """
@@ -500,20 +566,109 @@ def gw_ul_spectrum(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100):
     
     return gwfreqs, ul
 
+def gw_ul_hc(resdict, confidence=0.95, lhclow=-17.0, lhchigh=-10.0, rlow=-18.0,
+        rhigh=-10.0, bins=300, kind='cubic', skipzero=True):
+    """
+    Using the list of result dictionaries, create the spectrum upper-limits on
+    h_c(f). Works when Tmax is not equal for all pulsars, but still requires a
+    linear frequency spread per pulsar
+
+    :param resdict:
+        List of results dictionaries
+
+    :param confidence:
+        Confidence level of the upper-limit (one-sided)
+
+    :param lhclow:
+        Low bound on log10(hc^2)
+
+    :param lhchigh:
+        High bound on log10(hc^2)
+
+    :param rlow:
+        Low bound on log10(res^2)
+
+    :param rhigh:
+        High bound on log10(res^2)
+
+    :param bins:
+        Number of bins when doing the log-sum
+
+    :param kind:
+        What kind of interpolation to use when creating the interpolant (kde)
+
+    :param skipzero:
+        Skip interpolants that have zero-only elements
+    """
+    #gwfreqs = resdict[0]['freqs']      # Assume all frequencies of all pulsars are the same
+    gwfreqs = np.array([], dtype=np.double)
+    for psrres in resdict:
+        gwfreqs = np.append(gwfreqs, psrres['freqs'])
+    gwfreqs = np.unique(np.sort(gwfreqs))
+
+    # Assume a linear frequency spacing for each pulsar
+    df_list = [rd['freqs'][1] - rd['freqs'][0] for rd in resdict]
+
+    # We need to find the nearest element index
+    def find_nearest(array, value):
+        idx = (np.abs(array-value)).argmin()
+        df = array[0]
+        amin = np.min(array)
+        amax = np.max(array)
+        #if idx == 0 and value < 0.5*array[0]:
+        #if value < 1.0*df or value > amax+df:
+        if value < 1.0*df: # or value > amax+df:
+            # Check whether we are not too low in frequency
+            idx = -1
+        return idx
+
+    ul = np.zeros_like(gwfreqs)
+    gwamps = np.linspace(lhclow, lhchigh, bins)
+    for ii, freq in enumerate(gwfreqs):
+        kdes = []
+        msk = np.zeros(len(resdict), dtype=np.bool)
+        freqlist = []
+        for pp, psrres in enumerate(resdict):
+            find = find_nearest(psrres['freqs'], freq)
+            maxfind = len(psrres['freqs'])-1
+            if find >= 0:
+                kdes.append(psrres['kdes_ul'][find])
+                binfreq = psrres['freqs'][find]
+                appfreq = binfreq if find < maxfind else freq
+                #freqlist.append(psrres['freqs'][find])
+                freqlist.append(appfreq)
+                msk[pp] = True
+
+        lfullkde = lhcskde_from_lrkdes(kdes, np.array(df_list)[msk], freqlist,
+                rlow=rlow, rhigh=rhigh, lhcslow=2*lhclow, lhcshigh=2*lhchigh,
+                bins=bins, kind='cubic', skipzero=skipzero)
+
+        #fullkde = kde_multiply(kdes, lhclow, lhchigh, bins=bins)
+        #lfullkde = kde_logsum(kdes, lhclow, lhchigh, bins=bins)
+
+        #cdf = np.cumsum(fullkde(gwamps)) / np.sum(fullkde(gwamps))
+        lpdf = lfullkde(2*gwamps) + np.log(10**gwamps)
+        pdf = np.exp(lpdf - np.max(lpdf))
+        cdf = np.cumsum(pdf) / np.sum(pdf)
+
+        ul[ii] = gwamps[cdf > confidence][0]
+    
+    return gwfreqs, ul
+
 
 def gw_ul_powerlaw(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
-        gwlow=-20.0, gwhigh=-13.0, si=4.33, gwbins=50000, ngwfreqs=None):
+        gwblow=-20.0, gwbhigh=-13.0, si=4.33, gwbins=50000, ngwfreqs=None):
     """
     Calculate the GWB upper-limit, by multiplying the per-pulsar marginalized
     kdes per frequency
     """
-    gwamps = np.linspace(gwlow, gwhigh, bins)
-    #prior_kde = kde_gwprior(low=gwlow, high=gwhigh, bins=bins)
+    gwamps = np.linspace(gwblow, gwbhigh, bins)
     lpdf = np.zeros_like(gwamps)
 
     for ii, gwamp in enumerate(gwamps):
         for pp, psrres in enumerate(resdict):
-            gwfreqs = resdict[0]['freqs']
+            #gwfreqs = resdict[0]['freqs']
+            gwfreqs = psrres['freqs']
             if ngwfreqs is None:
                 ngwfreqs = len(gwfreqs)
             else:
@@ -526,16 +681,20 @@ def gw_ul_powerlaw(resdict, confidence=0.95, low=-18.0, high=-10.0, bins=100,
 
             for jj, freq in enumerate(gwfreqs[:ngwfreqs]):
                 kde = psrres['kdes_ul'][jj]
-                lpdf[ii] += np.log(kde(spect[jj]))
+                if np.all(kde(spect[jj]) > 0.0):
+                    lpdf[ii] += np.log(kde(spect[jj]))
+                else:
+                    psrname = psrres['psrname']
+                    print("WARNING: skipping zero-valued kde -- {0}, {1}/{2}".
+                            format(psrname, jj, freq))
 
         lpdf[ii] += np.log(10**gwamp)  #np.log(prior_kde(gwamp))
 
     # Smooth the log-pdf
     lpdf_kde = smooth_hist(lpdf, gwamps, sigma=0.75, kind='linear')
-    gwamps_l = np.linspace(gwlow, gwhigh, gwbins)
+    gwamps_l = np.linspace(gwblow, gwbhigh, gwbins)
     lpdf_l = lpdf_kde(gwamps_l)
     pdf = np.exp(lpdf_l - np.max(lpdf_l))
-    #pdf *= gwbins / (np.sum(pdf) * (gwhigh-gwlow))
     
     # Now calculate the upper-limit
     cdf = np.cumsum(pdf) / np.sum(pdf)
