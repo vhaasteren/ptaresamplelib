@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 from ptaresamplelib import *
+from bwmresample import *
 import bounded_kde
 import ptmcmc
 

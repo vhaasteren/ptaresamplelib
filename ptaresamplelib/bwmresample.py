@@ -12,13 +12,50 @@ import os, glob
 import sys
 import json
 import bounded_kde
+from sklearn import mixture
 import piccard as pic
+
+
+# Class to do interval transforms
+class intervalTransform(object):
+    """Class that performs interval transformations"""
+
+    def __init__(self, a, b):
+        self._a = a
+        self._b = b
+
+    def forward(self, x):
+        """Forward transformation"""
+        if x <= self._a:
+            p = -np.inf
+        elif x >= self._b:
+            p = np.inf
+        else:
+            p = np.log((x - self._a) / (self._b - x))
+
+        return p
+
+    def backward(self, p):
+        """Backward transformation"""
+        return (self._b - self._a) * np.exp(p) / (1 + np.exp(p)) + self._a
+
+    def logjacobian_grad(self, p):
+        """Log-jacobian, and it's gradient"""
+        lj = np.sum( np.log(self._b-self._a) + p - 2*np.log(1.0+np.exp(p)) )
+
+        lj_grad = np.zeros_like(p)
+        lj_grad = (1 - np.exp(p)) / (1 + np.exp(p))
+        return lj, lj_grad
+
+    def dxdp(self, p):
+        """Derivative of x wrt p (jacobian for chain-rule) - diagonal"""
+        return (self._b-self._a)*np.exp(p)/(1+np.exp(pp))**2
 
 
 class bwmPsrResult(object):
     
     def __init__(self, chaindir, burnin=10000,
-                low=None, high=None):
+                low=None, high=None, gmmcomponents=18):
         # Initialize a bwm pulsar, with two chains
         if not os.path.isdir(chaindir):
             raise IOError("Not a valid directory:", chaindir)
@@ -40,6 +77,10 @@ class bwmPsrResult(object):
                         low=self._low, high=self._high)
         self.kde_pos = bounded_kde.Bounded_kde_md(self.chain_pos.T,
                         low=self._low, high=self._high)
+
+        # Create the Gaussian Mixture Models (18 components so far...)
+        self.clf_pos = self.calc_gmm(self.chain_pos, ncomponents=gmmcomponents)
+        self.clf_neg = self.calc_gmm(self.chain_neg, ncomponents=gmmcomponents)
 
         # Normalize the two halfs
         #self.normalize(Ntrial=100)
@@ -74,8 +115,8 @@ class bwmPsrResult(object):
         self._norm = np.log(np.sum(inds_pos)) - np.log(np.sum(inds_neg))
     
     def set_psrpos(self, chainbase, psrname):
-        psrnames = np.loadtxt('results/psrpos.txt', dtype=str, usecols=[0])
-        positions = np.loadtxt('results/psrpos.txt', usecols=[1,2,3,4,5,6])
+        psrnames = np.loadtxt(os.path.join(chainbase, 'psrpos.txt'), dtype=str, usecols=[0])
+        positions = np.loadtxt(os.path.join(chainbase, 'psrpos.txt'), usecols=[1,2,3,4,5,6])
         
         # Find the psr position in the list
         try:
@@ -97,21 +138,74 @@ class bwmPsrResult(object):
         if self._high is None:
             self._high = np.array([positions[ind[0],3], positions[ind[0],5]])
 
-    def boundpars(self, pars):
+    def calc_gmm(self, chain, ncomponents=18):
+        """Calculate the Gaussian Mixture Model approximation, given the chain
+        and the bounds"""
+        self.trans_epoch = intervalTransform(self._low[0], self._high[0])
+        self.trans_amp = intervalTransform(self._low[1], self._high[1])
+
+        # Calculate the transformed chain
+        # TODO: vectorize this!!!
+        trans_chain = np.zeros_like(chain)
+        for ii, x in enumerate(chain):
+            tepoch = self.trans_epoch.forward(x[0])
+            tamp = self.trans_amp.forward(x[1])
+            trans_chain[ii,:] = np.array([tepoch, tamp])
+
+        # Calculate the GMM
+        clf = mixture.GMM(n_components=ncomponents, covariance_type='full')
+        clf.fit(trans_chain)
+        
+        # clf.aic(trans_chain)
+        # clf.bic(trans_chain)
+        return clf
+
+    def boundpars(self, pars, pad=0.0):
         pars = np.array(pars).copy()
-        pars[0] = max(self._low[0], pars[0])
-        pars[1] = max(self._low[1], pars[1])
-        pars[0] = min(self._high[0], pars[0])
-        pars[1] = min(self._high[1], pars[1])
+        pars[0] = max(self._low[0] + pad, pars[0])
+        pars[1] = max(self._low[1] + pad, pars[1])
+        pars[0] = min(self._high[0] - pad, pars[0])
+        pars[1] = min(self._high[1] - pad, pars[1])
         return pars
                 
-    def pdf(self, pars, pos=True):
+    def pdf_kde(self, pars, pos=True):
         pars = self.boundpars(pars)
         return self.kde_pos(pars)[0] if pos else self.kde_neg(pars)[0] * np.exp(self._norm)
     
-    def logpdf(self, pars, pos=True):
+    def logpdf_kde(self, pars, pos=True):
         pars = self.boundpars(pars)
         return np.log(self.kde_pos(pars)[0]) if pos else np.log(self.kde_neg(pars)[0]) + self._norm
+
+    def logpdf_gmm(self, pars, pos=True, pad=0.01):
+        pars = self.boundpars(pars, pad=pad)
+
+        # Get the transformed coordinates
+        p = np.zeros_like(pars)
+        p[0] = self.trans_epoch.forward(pars[0])
+        p[1] = self.trans_amp.forward(pars[1])
+
+        # Get the Jacobian of the transformation log|dx/dp|
+        lj = 0.0
+        lj += self.trans_epoch.logjacobian_grad(p[0])[0]
+        lj += self.trans_amp.logjacobian_grad(p[1])[0]
+
+        # Get the transformed density
+        if pos:
+            ll = self.clf_pos.score(p)
+        else:
+            ll = self.clf_neg.score(p)
+
+        return ll - lj
+        
+    def pdf_gmm(self, pars, pos=True, pad=0.01):
+        return np.exp(self.logpdf_gmm(pars, pos=pos, pad=pad))
+
+    def logpdf(self, pars, pos=True):
+        return self.logpdf_gmm(pars, pos=pos, pad=0.01)
+
+    def pdf(self, pars, pos=True):
+        return self.pdf_gmm(pars, pos=pos, pad=0.01)
+
 
 class bwmArray(object):
     
