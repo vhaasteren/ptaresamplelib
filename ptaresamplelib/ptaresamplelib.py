@@ -8,6 +8,7 @@ import scipy.ndimage.filters as filters
 import scipy.interpolate as interp
 import ptmcmc
 import bounded_kde
+
 try:
     import piccard as pic
 except ImportError:

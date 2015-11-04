@@ -14,6 +14,7 @@ import json
 import bounded_kde
 from sklearn import mixture
 import piccard as pic
+import corner
 
 
 # Class to do interval transforms
@@ -211,7 +212,8 @@ class bwmArray(object):
     
     def __init__(self, resultsdir, burnin=10000, psrlist=None,
             low=[53000.0, -18.0], high=[55000.0, -10.0],
-            incMonopole=False, incDipole=False, incQuadrupole=True):
+            incMonopole=False, incDipole=False, incQuadrupole=True,
+            incAbsQuadrupole=False):
         self.bwmPsrs = []
         
         for infile in glob.glob(os.path.join(resultsdir, '[BJ]*')):
@@ -232,6 +234,9 @@ class bwmArray(object):
         if incQuadrupole:
             self.model.append('quadrupole')
 
+        if incAbsQuadrupole:
+            self.model.append('absquadrupole')
+
         self.setPriors(low, high)
             
 
@@ -244,6 +249,7 @@ class bwmArray(object):
         startraj = 0.1
         startdecj = 0.1
         startpol = 0.1
+        labels = ['epoch']
 
         # All signals share the burst/glitch epoch
         pmin = [low[0]]
@@ -256,23 +262,34 @@ class bwmArray(object):
             pmax += [high[1]]
             pstart += [startamp]
             pwidth += [0.1]
+            labels += ['mono-lamp']
 
         if 'dipole' in self.model:
             pmin += [low[1], 0.0, -0.5*np.pi, 0.0]
             pmax += [high[1], 2*np.pi, 0.5*np.pi, 2*np.pi]
             pstart += [startamp, startraj, startdecj, startpol]
             pwidth += [0.1, 0.1, 0.1, 0.1]
+            labels += ['dip-lamp', 'dip-raj', 'dip-decj', 'dip-pol']
 
         if 'quadrupole' in self.model:
             pmin += [low[1], 0.0, -0.5*np.pi, 0.0]
             pmax += [high[1], 2*np.pi, 0.5*np.pi, np.pi]
             pstart += [startamp, startraj, startdecj, startpol]
             pwidth += [0.1, 0.1, 0.1, 0.1]
+            labels += ['bwm-lamp', 'bwm-raj', 'bwm-decj', 'bwm-pol']
+
+        if 'absquadrupole' in self.model:
+            pmin += [low[1], 0.0, -0.5*np.pi, 0.0]
+            pmax += [high[1], 2*np.pi, 0.5*np.pi, np.pi]
+            pstart += [startamp, startraj, startdecj, startpol]
+            pwidth += [0.1, 0.1, 0.1, 0.1]
+            labels += ['absquad-lamp', 'absquad-raj', 'absquad-decj', 'absquad-pol']
 
         self.pmin = np.array(pmin)
         self.pmax = np.array(pmax)
         self.pstart = np.array(pstart)
         self.pwidth = np.array(pwidth)
+        self.labels = labels
 
     def MonopoleAntennaPattern(self):
         """Return the antenna pattern of a MonoPole
@@ -287,7 +304,7 @@ class bwmArray(object):
         :param decj:    Declination pulsar (rad) [-pi/2,pi/2]
         :param raj:     Right ascension source (rad) [0,2pi]
         :param dec:     Declination source (rad) [-pi/2,pi/2]
-        :param pol:     Polarization angle (rad) [0,pi]
+        :param pol:     Polarization angle (rad) [0,2pi]
         """
         Omega = np.array([-np.cos(decj)*np.cos(raj), \
                           -np.cos(decj)*np.sin(raj), \
@@ -350,6 +367,7 @@ class bwmArray(object):
             monoamp = 0
             dipamp = 0.0
             quadamp = 0.0
+            absquadamp = 0.0
 
             if 'monopole' in self.model:
                 mono_ap = self.MonopoleAntennaPattern()
@@ -374,7 +392,15 @@ class bwmArray(object):
             else:
                 quadamp = 0.0
 
-            amp = monoamp + dipamp + quadamp
+            if 'absquadrupole' in self.model:
+                absquad_ap = self.QuadrupoleAntennaPattern(bwmPsr.raj, bwmPsr.decj,
+                        pars[index+1], pars[index+2], pars[index+3])
+                absquadamp = np.abs(absquad_ap) * 10**pars[index]
+                index += 4
+            else:
+                absquadamp = 0.0
+
+            amp = monoamp + dipamp + quadamp + absquadamp
             s = np.sign(amp)
             lamp = np.log10(s*amp)
             ll += bwmPsr.logpdf([epoch, lamp], s==1.0)
@@ -395,6 +421,20 @@ class bwmArray(object):
         return self.logprior(pars) + self.loglik(pars)
 
 
+
+
+################################################################################
+################################################################################
+################################################################################
+################################################################################
+################                                               #################
+################           Older version of the code           #################
+################          Included here for reference          #################
+################                                               #################
+################################################################################
+################################################################################
+################################################################################
+################################################################################
 
 
 class bwmPsrResult2S(object):
