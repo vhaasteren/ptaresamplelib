@@ -9,6 +9,8 @@ except ImportError:
     from distutils.core import setup
     from distutils.extension import Extension
 
+from Cython.Build import cythonize
+
 
 if sys.argv[-1] == "publish":
     os.system("python setup.py sdist upload")
@@ -38,5 +40,7 @@ setup(
         "License :: OSI Approved :: GNU General Public License (GPL)",
         "Operating System :: OS Independent",
         "Programming Language :: Python",
-    ]
+    ],
+    ext_modules = cythonize(Extension('ptaresamplelib.cgmm', ['ptaresamplelib/cgmm.pyx'],
+            include_dirs = [numpy.get_include()]))
 )
